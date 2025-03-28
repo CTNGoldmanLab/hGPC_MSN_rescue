@@ -1,0 +1,708 @@
+---
+title: 'Differential Expression Analysis'
+author: "Nguyen Huynh"
+date: "`r Sys.Date()`"
+output: html_document
+abstract: "After cell type annotation, we can run a couple of differential expression tests" 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.path = paste0("./Integrate_Plots/"), fig.width = 8, message=FALSE, warning = FALSE)
+```
+
+### PART 1: Read in data 
+
+```{r}
+# Set libPaths to global 
+.libPaths("/gpfs/fs1/sfw2/r/4.1.1/b1/lib64/R/library")
+suppressPackageStartupMessages(library(Seurat))
+suppressPackageStartupMessages(library(sctransform))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(ggthemes))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(clusterProfiler))
+suppressPackageStartupMessages(library(GO.db))
+suppressPackageStartupMessages(library(org.Mm.eg.db))
+suppressPackageStartupMessages(library(fgsea))
+suppressPackageStartupMessages(library(GeneOverlap))
+suppressPackageStartupMessages(library(VennDiagram))
+suppressPackageStartupMessages(library(jsonlite))
+suppressPackageStartupMessages(library(GeneOverlap))
+suppressPackageStartupMessages(library(glmnet))
+suppressPackageStartupMessages(library(relaimpo))
+suppressPackageStartupMessages(library(igraph))
+```
+
+```{r}
+mouse_human_genes = read.csv("http://www.informatics.jax.org/downloads/reports/HOM_MouseHumanSequence.rpt",sep="\t")
+```
+
+```{r}
+source("helper_data_wrangling_functions.R")
+source("helper_plot_functions.R")
+```
+
+```{r include = FALSE}
+integrated_object <- readRDS("../outs/RDS/mash.RDS")
+```
+
+```{r include = TRUE, eval = FALSE}
+integrated_object <- readRDS("outs/RDS/integrated_object.RDS")
+```
+
+```{r}
+cellType_colors <- c("#FFFF00", "#FF00FF", economist_pal()(3), "#F15A60", "saddlebrown", "#FAA75B", "#9E67AB", "springgreen3", "blue", "grey80")
+DefaultAssay(integrated_object) <- "RNA" # "RNA"
+```
+
+```{r}
+markers <- list(msn = c("Ppp1r1b", "Drd1", "Drd2"), 
+                interneuron = c("Gad1", "Gad2", "Adarb2", "Lhx6", "Ache", "Pvalb"),
+                gpc = c("Olig1", "Olig2", "Pdgfra", "Gpr17"), 
+                ol  = c("Plp1", "Mbp"), 
+                astrocyte = c("Aqp4", "Sox9"), 
+                microglia = c("Cx3cr1", "P2ry12"), 
+                pericyte = c("Pdgfrb", "Itga1"),
+                corticalneuron = c("Slc17a7", "Tle4"))
+```
+
+```{r}
+DimPlot(integrated_object, cols = cellType_colors, ncol = 2, split.by = "mouse_engraft")
+```
+
+### PART 2: Differential expression 
+
+Pairwise differential expression analysis for MSN cell types
+
+```{r eval = FALSE, include = TRUE}
+source("05_getDiff_msn.R")
+```
+
+### PART 3: Focusing on the MSN DEG 
+
+```{r include = FALSE}
+markers_msn_pair <- readRDS("../outs/RDS/MAST_MSN_pairwise.RDS")
+```
+
+
+```{r eval = FALSE, include = TRUE}
+markers_msn_pair <- readRDS("outs/RDS/MAST_MSN_pairwise.RDS")
+```
+
+
+```{r}
+markers_msn_rw_un <- markers_msn_pair[["rw_un"]]
+markers_msn_rw_un <- lapply(markers_msn_rw_un, function(x) x[["MAST"]])
+```
+
+#### A data frame tagged with log2FC and padj 
+
+```{r}
+x_msn <- list()
+# Down
+x_msn[["d1_dn"]] <- markers_msn_pair[["rw_un"]][["D1_MSN"]][["MAST"]] %>% filter(avg_log2FC < -0.25 & p_val_adj < 1e-3) %>% row.names()
+x_msn[["d2_dn"]] <- markers_msn_pair[["rw_un"]][["D2_MSN"]][["MAST"]] %>% filter(avg_log2FC < -0.25 & p_val_adj < 1e-3) %>% row.names()
+
+# Up
+x_msn[["d1_up"]]  <- markers_msn_pair[["rw_un"]][["D1_MSN"]][["MAST"]] %>% filter(avg_log2FC > 0.25 & p_val_adj < 1e-3) %>% row.names()
+x_msn[["d2_up"]]  <- markers_msn_pair[["rw_un"]][["D2_MSN"]][["MAST"]] %>% filter(avg_log2FC > 0.25 & p_val_adj < 1e-3) %>% row.names()
+
+# Check that the down-regulated genes are not in the up-regulated list as well 
+y1 <- unlist(x_msn[c("d1_dn", "d2_dn")]) %>% unique()
+y2 <- unlist(x_msn[c("d1_up", "d2_up")]) %>% unique()
+table(y2 %in% y1); table(y1 %in% y2)
+# saveRDS(x_msn, "outs/RDS/DEG_MSN.RDS")
+```
+
+Add in log2FC and padj values 
+
+```{r}
+# The union of y1 and y2 are a compilation of genes that have padj < 1e-3 and log2FC > 0.25 in one of the two MSN populations. 
+deg.df <- data.frame(Gene = union(y1, y2), Dysregulated_SubCluster = NA)
+for (d in c("D1_MSN", "D2_MSN")) {
+  tmp.df <- markers_msn_pair[["rw_un"]][[d]][["MAST"]] 
+  tmp.df <- tmp.df[row.names(tmp.df) %in% deg.df$Gene,] %>% dplyr::select(avg_log2FC, p_val_adj) %>% tibble::rownames_to_column(var = "Gene")
+  deg.df <- merge(deg.df, tmp.df, all = TRUE, by = "Gene")
+}
+
+colnames(deg.df) <- c("Gene", "Dysregulated_SubCluster", "D1_log2FC", "D1_padj", "D2_log2FC", "D2_padj")
+```
+
+Describe whether it was dysregulated in D1, D2, or both 
+
+```{r}
+vplD <- venn.diagram(list(D1 = x_msn[["d1_dn"]], D2 = x_msn[["d2_dn"]]), filename = NULL)
+vplU <- venn.diagram(list(D1 = x_msn[["d1_up"]], D2 = x_msn[["d2_up"]]), filename = NULL)
+junks <- list.files(".", "VennDiagram")
+file.remove(junks)
+```
+
+```{r, fig.width=4, fig.height=2}
+plot_grid(vplD, vplU, ncol = 2)
+```
+
+
+```{r}
+for (g in deg.df$Gene) {
+  if (g %in% y1) { # if loop for down or up-regulated
+    if (g %in% x_msn[["d1_dn"]] & !g %in% x_msn[["d2_dn"]]) {
+      token <- "D1"
+    } else if (!g %in% x_msn[["d1_dn"]] & g %in% x_msn[["d2_dn"]]) {
+      token <- "D2"
+    } else if (g %in% x_msn[["d1_dn"]] & g %in% x_msn[["d2_dn"]]) {
+      token <- "Both"
+    }
+  } else if (g %in% y2) {
+    if (g %in% x_msn[["d1_up"]] & !g %in% x_msn[["d2_up"]]) {
+      token <- "D1"
+    } else if (!g %in% x_msn[["d1_up"]] & g %in% x_msn[["d2_up"]]) {
+      token <- "D2"
+    } else if (g %in% x_msn[["d1_up"]] & g %in% x_msn[["d2_up"]]) {
+      token <- "Both"
+    }
+  } # End big if loop for down or up regulated 
+  deg.df$Dysregulated_SubCluster[which(deg.df$Gene == g)] <- token
+}
+
+# write.table(deg.df, "outs/tables/DEG_MSN_rw_un.txt", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+```
+
+
+#### Network analysis and cluster into gene communities with extensive pathways 
+##### Egos 
+
+y1 & y2 are genes that are dysregulated in either one or both MSNs
+
+```{r eval = FALSE, include=TRUE}
+source("05_egos.R")
+```
+
+The upregulated genes contribute to ribosome/translation ==> Dying cells. 
+The downregulated genes overwhelmingly represent synapse-related pathways. It was not productive to try to cluster the GO terms, since it's all synapse versus everybody else. 
+
+### PART 4: SynGO on downregulated genes 
+
+Since we observed that synaptic pathways were the most affected (re: downregulated genes), we would like to isolate out this effect and see if the downregulated synaptic functions are rescued upon engraftment. 
+
+```{r include = FALSE}
+deg.df <- read.table("../outs/tables/DEG_MSN_rw_un.txt", header = TRUE)
+```
+
+```{r include = TRUE, eval = FALSE}
+deg.df <- read.table("outs/tables/DEG_MSN_rw_un.txt", header = TRUE)
+```
+
+```{r}
+goi <- deg.df$Gene[which(deg.df$D1_log2FC < -0.25 | deg.df$D2_log2FC < -0.25)]
+# https://support.bioconductor.org/p/129636/
+mouse_human_genes = read.csv("http://www.informatics.jax.org/downloads/reports/HOM_MouseHumanSequence.rpt",sep="\t")
+goi <- convert_mouse_to_human(goi, mouse_human_genes)
+# writeLines(goi, "outs/tables/MSN_downregulated_rw_un_forSynGO.txt") # 500 genes
+```
+
+Manually upload this gene list to synGO, then run the analysis with "brain-expressed" background, and save the SVG of BP, SVG of CC, as well as export data into a zipped folder. 
+
+```{r include = FALSE}
+synGO <- readxl::read_excel("../outs/tables/SynGO/Downregulated_R62_vs_WT_Baseline/SynGO_geneset_analysis__Downregulated_R62_vs_WT_Unengrafted/syngo_ontologies_with_annotations_matching_user_input.xlsx")
+```
+
+```{r eval = FALSE, include = TRUE}
+synGO <- readxl::read_excel("outs/tables/SynGO/Downregulated_R62_vs_WT_Baseline/SynGO_geneset_analysis__Downregulated_R62_vs_WT_Unengrafted/syngo_ontologies_with_annotations_matching_user_input.xlsx")
+```
+
+```{r}
+# Sort by padj, remove CC and focus on BP 
+# Remove SYNGO terms because we don't know what the gene member is. Resort to GO ID for later comparisons in GSEA 
+synGO <- synGO[order(synGO$`GSEA 'gene cluster' FDR corrected p-value`),] %>% filter(`GO domain` == "BP" & `GSEA 'gene cluster' FDR corrected p-value` < 1e-3)
+synGO <- synGO[startsWith(synGO$`GO term ID`, "GO"),] # 23 signif terms
+# We can see that the first five really focus on synaptic signaling (H&I terms)
+head(synGO)
+```
+
+```{r}
+syngo_pIDs <- synGO$`GO term name`
+pway_synGO.df <- relax_geneSet.f(gsea_df = synGO, geneset_colnames = "genes - hgnc_symbol", term_colnames = "GO term name", convert = "toMouse", delimiter = ";")
+```
+
+### PART 5: Recovery/Betterment of MSN upon hGPC transplantation
+
+#### Dimensionality Reduction
+
+Subset MSN and clustered with scVI/leiden on RNA  
+
+Output from 04_* scripts
+
+```{r include=FALSE}
+integrated_objectMSN <- readRDS("../outs/RDS/mashMSN.RDS")
+```
+
+```{r eval = FALSE, include=TRUE}
+integrated_objectMSN <- readRDS("outs/RDS/integrated_objectMSN.RDS")
+```
+
+```{r}
+DefaultAssay(integrated_objectMSN) <- "RNA"
+```
+
+```{r, fig.width = 10, fig.height=6}
+p1 <- DimPlot(integrated_objectMSN, group.by = "msnStatus")
+# We could see the segregation of MSNs... some perhaps affected by hGPC engraftment and some not? 
+p2 <- DimPlot(integrated_objectMSN, group.by = "cellTypeInt", cols = cellType_colors)
+p3 <- DimPlot(integrated_objectMSN, group.by = "mouse", cols = c("navy", "grey"))
+p4 <- DimPlot(integrated_objectMSN, group.by = "engraft", cols = c("red", "black"))
+
+plot_grid(p1, p4, p2, p3, ncol = 2)
+```
+
+```{r, fig.width=10, fig.height=3}
+DimPlot(integrated_objectMSN, group.by = "msnStatus", split.by = "mouse_engraft", cols = c("blue", "grey80", "navy", "grey30"))
+```
+
+Cell composition per cluster
+
+```{r}
+cellType_counter <- integrated_objectMSN@meta.data[, c("mouse_engraft", "msnStatus")] %>% group_by(mouse_engraft, msnStatus) %>% count()
+ggplot(cellType_counter, aes(x= mouse_engraft, y = n, fill = msnStatus)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = c("red3", "navy", "grey", "black")) + theme_bw() + labs(x="", y = "Proportion", fill="Cell Type") + theme(axis.text.x = element_text(color = "black", angle = 90, hjust = 1, vjust = 0))
+```
+
+#### Differential Expression Analysis
+
+Compare restored MSNs vs sick MSNs by 
+
+```{r eval = FALSE, include=TRUE}
+DefaultAssay(integrated_objectMSN) <- "RNA" 
+# Restore2 stores values of only R62+engraft that look like WT, and R62/unengraft that look sick and not like WT at all; and exclude all other cells
+integrated_objectMSN <- SetIdent(integrated_objectMSN, value = "restore2")
+subOb <- subset(integrated_objectMSN, subset = restore2 != "")
+# Reset ident to restore, so that we can do diff by D1 and D2 
+subOb <- SetIdent(subOb, value = "restore")
+restore_deg <- list()
+for (ct in c("D1", "D2")) {
+  restore_deg[[ct]] <- get_diff.f(object = subOb, ident1 = paste0(ct, "_restore"), ident2 = paste0(ct, "_sick"), fc_cut = 0.5, padj_cut = 1e-3)
+}
+saveRDS(restore_deg, "outs/RDS/MAST_R62MSN_restore.RDS")
+```
+
+### PART 6: Restoration on the pathway level 
+
+#### SynGO
+
+What is upregulated in R62/engraft/healthy vs R62/noengraft/sick? 
+
+```{r include=FALSE}
+restore_deg <- readRDS("../outs/RDS/MAST_R62MSN_restore.RDS")
+```
+
+```{r include=TRUE, eval = FALSE}
+restore_deg <- readRDS("outs/RDS/MAST_R62MSN_restore.RDS")
+```
+
+```{r}
+# upregulated
+syn_goi <- lapply(restore_deg, function(x) row.names(x$MAST)[x$MAST$avg_log2FC > 0.25 & x$MAST$p_val_adj < 1e-3])
+syn_goi <- Reduce(union, unlist(syn_goi))
+syn_goi <- convert_mouse_to_human(syn_goi, mouse_human_genes)
+syn_goi <- unique(syn_goi)
+# writeLines(syn_goi, "outs/tables/MSN_restoreUp_R62MSN_forSynGO.txt")
+```
+
+#### SynGO indicates that synapse organization is upregulated in the MSNs in restored compared to sick.
+
+```{r include = FALSE}
+synR_up <- readxl::read_excel("../outs/tables/SynGO/RestoreUp_R62_hGPC_vs_Unengrafted/SynGO_geneset_analysis__RestoreUp_R62_hGPC_vs_Unengrafted/syngo_ontologies_with_annotations_matching_user_input.xlsx")
+```
+
+```{r include = TRUE, eval = FALSE}
+synR_up <- readxl::read_excel("outs/tables/SynGO/RestoreUp_R62_hGPC_vs_Unengrafted/SynGO_geneset_analysis__RestoreUp_R62_hGPC_vs_Unengrafted/syngo_ontologies_with_annotations_matching_user_input.xlsx")
+```
+
+```{r}
+# Sort by padj, remove CC and focus on BP 
+# Remove SYNGO terms because we don't know what the gene member is. Resort to GO ID for later comparisons in GSEA 
+# Go strict for top genes 
+synR_up <- synR_up[order(synR_up$`GSEA 'gene cluster' FDR corrected p-value`),] %>% filter(`GO domain` == "BP" & `GSEA 'gene cluster' FDR corrected p-value` < 1e-10)
+synR_up <- synR_up[startsWith(synR_up$`GO term ID`, "GO"),] # 1 terms @ 1e-10
+```
+
+```{r}
+synR_up # I
+```
+
+### PART 7: IMPORTANT TF CANDIDATES 
+
+#### Load precomputed pySCENIC results 
+
+```{r}
+regs <- read_json("../02_pySCENIC/regulonsTarget.json", simplifyVector = T) # TF to target pairs
+weight <- read_json("../02_pySCENIC/regulonsWeight.json", simplifyVector = T) # TF to gene2weight based on target order
+names(regs) <- gsub("\\(.*", "", names(regs))
+names(weight) <- gsub("\\(.*", "", names(weight))
+```
+
+```{r}
+auc <- read.csv("../02_pySCENIC/auc.txt", stringsAsFactors = FALSE, row.names = 1)
+colnames(auc) <- gsub("\\..*", "", colnames(auc))
+```
+
+#### Fisher enrichment test
+
+What are the transcription factors upstream of targets that are enriched in SynGO terms? Perform this test for all TFs found in regs 
+
+```{r}
+### Regulons against selected GO terms
+synGO_list <- list(Baseline = readxl::read_excel("../outs/tables/SynGO/Downregulated_R62_vs_WT_Baseline/SynGO_geneset_analysis__Downregulated_R62_vs_WT_Unengrafted/syngo_ontologies_with_annotations_matching_user_input.xlsx"), 
+                   Restore = readxl::read_excel("../outs/tables/SynGO/RestoreUp_R62_hGPC_vs_Unengrafted/SynGO_geneset_analysis__RestoreUp_R62_hGPC_vs_Unengrafted/syngo_ontologies_with_annotations_matching_user_input.xlsx"))
+synGO_list <- lapply(synGO_list, function(x) x %>% filter(`GO domain` == "BP" & `GSEA 'gene cluster' FDR corrected p-value` < 1e-3))
+synGO_list <- lapply(synGO_list, function(x) x[startsWith(x$`GO term ID`, "GO"),])
+
+picked_go <- unlist(lapply(synGO_list, function(x) x$`GO term ID`)) %>% unique()
+picked_go <- picked_go[picked_go != "GO:0150052"]
+allegs <- sapply(picked_go, function(x) get(x, org.Mm.egGO2ALLEGS))
+picked_go_genes <- lapply(allegs, function(x) unlist(mget(x, org.Mm.egSYMBOL)))
+fisherRes_syn <- data.frame(TF = character(), GO = character(), pval = numeric())
+for (tf in names(regs)) {
+  for (goid in names(picked_go_genes)) {
+    goObj <- newGeneOverlap(regs[[tf]], picked_go_genes[[goid]], spec = "mm9.gene") # Number of genes annotated
+    goObj <- testGeneOverlap(goObj)
+    tmp <- data.frame(TF = tf, GO = goid, pval = goObj@pval)
+    fisherRes_syn <- rbind(tmp, fisherRes_syn)
+  }
+}
+# Adjust for multiple comparisons 
+fisherRes_syn$padj <- p.adjust(fisherRes_syn$pval, method = "BH")
+# Map to GO names 
+tmp <- data.frame(ID = lapply(synGO_list, function(x) x$`GO term ID`) %>% unlist(), 
+                  Name = lapply(synGO_list, function(x) x$`GO term name`) %>% unlist())
+tmp <- tmp[!duplicated(tmp), ]
+fisherRes_syn$Term <- plyr::mapvalues(fisherRes_syn$GO, tmp$ID, tmp$Name)
+```
+
+#### Mean Activity by msnStatus
+
+```{r warning = FALSE}
+names(regs)[names(regs) == "Nkx2-2"] <- "Nkx2"
+names(regs)[names(regs) == "Nkx6-2"] <- "Nkx6"
+meanAUC <- AverageExpression(integrated_objectMSN, assays = "AUC", features = names(regs), group.by = "restore2")$AUC
+meanAUC <- as.data.frame(meanAUC)
+```
+
+#### Logistic regression to pull out important TFs
+
+Find transcription factors that are loaded for baseline & restore 
+
+```{r eval=FALSE, include = TRUE}
+# integrated_objectMSN <- readRDS("outs/RDS/integrated_objectMSN.RDS")
+subOb <- subset(integrated_objectMSN, subset = restore2 != "")
+auc_sub <- auc[row.names(subOb@meta.data),]
+all.equal(row.names(auc_sub), row.names(subOb@meta.data))
+success_record <- ifelse(subOb$restore2 =="restore", 1, 0)
+set.seed(2358)
+cv.lasso <- cv.glmnet(x=as.matrix(auc_sub), y = success_record, alpha = 1, family = "binomial")
+model <- glmnet(x = as.matrix(auc_sub), y = success_record, alpha = 1, family = "binomial", lambda = cv.lasso$lambda.min)
+coef <- as.data.frame(as.matrix(coef(model)))
+coef <- tibble::rownames_to_column(coef, var = "TF")
+gc()
+# write.csv(coef, "outs/tables/LASSO_res.csv", quote = FALSE)
+```
+
+#### PickedTF
+
+```{r}
+coef <- read.csv("../outs/tables/LASSO_res.csv", stringsAsFactors = FALSE, row.names = 1)
+# TF of interest will have the following criteria: 
+## Positive coef: Meaning that higher activity means winning/restoring: 
+coef_filt <- coef[coef$s0 > 12,]
+## Higher mean AUC in restore compared to baseline
+mean_activity_restoreHigh <- row.names(meanAUC)[which((meanAUC$restore > meanAUC$baseline) & (meanAUC$restore > 0.05))]
+## Their targets are enriched in SynGO terms
+enriched_fisher <- fisherRes_syn$TF[fisherRes_syn$padj < 5e-2]
+## These TFs are: 
+#### 1. Have a positive lasso score ( upregulated in restore)
+#### 2. Higher mean activity in restore vs baseline 
+#### 3. Their targets are enriched for synapse-related pathways 
+#### 4. Their mean activity is higher than an arbitrary cutoff of 0.05. We reason that lower than that, the activity is not reliable
+# Histogram shows that the first bin is 0.05
+coef_filt <- coef_filt[coef_filt$TF %in% intersect(enriched_fisher, mean_activity_restoreHigh),]
+
+# TF of interest 
+pickedTF <- coef_filt$TF
+```
+
+```{r}
+# Remove TF whose expressions were not significantly restored upon engraftment 
+restore_deg <- readRDS("../outs/RDS/MAST_R62MSN_restore.RDS")
+x <- lapply(restore_deg, function(x) row.names(x$MAST)[which(x$MAST$avg_log2FC > 0.25 & x$MAST$p_val_adj < 1e-3)])
+restore <- Reduce(intersect, x)
+pickedTF <- pickedTF[pickedTF %in% unique(c(restore))]
+# write.table(coef_filt[coef_filt$TF %in% pickedTF,], "outs/tables/pickedTF.txt", quote = FALSE)
+```
+
+```{r}
+pickedTF
+# Since Tcf7l1 is a inhibitor, we remove it from the list
+# as pySCENIC looks for activators only 
+# participates in the Wnt signaling pathway. Binds to DNA and acts as a repressor in the absence of CTNNB1, and as an activator in its presence. 
+pickedTF <- pickedTF[!pickedTF %in% "Tcf7l1"]
+
+pickedTF
+```
+
+
+```{r}
+# writeLines(pickedTF, "outs/tables/pickedTF_list.txt")
+```
+
+### PART 8 : Contribution of background (WT vs R62) versus engraftment (with or without GPC) 
+
+```{r}
+# integrated_objectMSN <- readRDS("integrated_objectMSN.RDS")
+auc <- read.csv("../02_pySCENIC/auc.txt", stringsAsFactors = FALSE, row.names = 1)
+colnames(auc) <- gsub("\\..*", "", colnames(auc))
+```
+
+```{r}
+auc_sub <- auc[colnames(integrated_objectMSN), ]
+all.equal(row.names(auc_sub), row.names(integrated_objectMSN@meta.data))
+# Matrix to test for multicolinearity 
+tmp_mat <- data.frame(AUC = auc_sub[,1], background = integrated_objectMSN$mouse, engraft = integrated_objectMSN$engraft)
+tmp_mod <- lm(AUC ~ background + engraft, data = tmp_mat)
+# VIF < 5 so all good to go
+car::vif(tmp_mod)
+```
+
+```{r}
+# Build a model where AUC is explained by the additive effect of both background and engraftment
+magic_number <- length(pickedTF)
+rsq  <- data.frame(row.names = pickedTF, R2=rep(0, magic_number), pval = rep(NA, magic_number))
+proR <- data.frame(matrix(ncol=5, nrow=0))
+colnames(proR) <- c("confidence", "lower", "upper", "covariate", "TF")
+for (i in 1:magic_number) {
+  me_name <- pickedTF[i]
+  me <- auc_sub[, me_name]
+  data_for_lm <- data.frame(AUC = me, background = as.factor(integrated_objectMSN$mouse), engraft = as.factor(integrated_objectMSN$engraft))
+  fit <- lm(AUC ~ background + engraft, data = data_for_lm)
+  # R-squared and p-val for the fit
+  rsq[me_name, "R2"] <- summary(fit)$r.squared
+  rsq[me_name, "pval"] <- lmp(fit)
+  # Relaimpo
+  cov_keep <- c("background", "engraft")
+  tmp <- calculate_relative_importance(fit = fit, suffix = me_name)
+  colnames(tmp) <- c("confidence", "lower", "upper", "covariate", "TF")
+  proR <- rbind(proR, tmp)
+}
+# Adjust p-values for multiple comparisons 
+rsq$padj <- p.adjust(as.vector(rsq$pval), method = "BH")
+# We can see that everybody here is signif (yayy)
+```
+
+```{r, fig.width=4, fig.height=2}
+# Rearrange proR by contribution to mouse, then set factor for ggplot
+x <- proR %>% filter(covariate == "background")
+x <- x[order(x$confidence, decreasing = TRUE),]
+proR$TF <- factor(proR$TF, levels = x$TF)
+col_pal <- RColorBrewer::brewer.pal(8, "Set3")[4:5]
+# 
+p3 <- ggplot(proR, aes(x=TF, y=confidence, fill = covariate)) + geom_col() + scale_fill_manual(values = col_pal) + theme_bw() + theme(axis.text.x = element_text(angle = 30, hjust = 1), axis.title.x = element_blank()) + ylab(bquote('Proportion'~R^2)) 
+p3 
+
+# saveRDS(proR, "outs/RDS/proR.RDS")
+```
+
+### PART 9: The SYNGO network
+
+#### SynGO genes
+
+Retain ALL pickedTF candidates, but tried to see if they directly control any synaptic genes, or if they are upstream of a TF that is then upstream of synaptic genes 
+
+```{r}
+# Restore: Upregulated in R62+GPC hanging out with WT vs R62_Unengrafted
+synGO_list <- list(Baseline = readxl::read_excel("../outs/tables/SynGO/Downregulated_R62_vs_WT_Baseline/SynGO_geneset_analysis__Downregulated_R62_vs_WT_Unengrafted/syngo_ontologies_with_annotations_matching_user_input.xlsx"), 
+                   Restore = readxl::read_excel("../outs/tables/SynGO/RestoreUp_R62_hGPC_vs_Unengrafted/SynGO_geneset_analysis__RestoreUp_R62_hGPC_vs_Unengrafted/syngo_ontologies_with_annotations_matching_user_input.xlsx"))
+synGO_list <- lapply(synGO_list, function(x) x %>% filter(`GO domain` == "BP" & `GSEA 'gene cluster' FDR corrected p-value` < 1e-3))
+synGO_list <- lapply(synGO_list, function(x) x[startsWith(x$`GO term ID`, "GO"),])
+```
+
+```{r}
+synGO_pway <- lapply(synGO_list, function(x) relax_geneSet.f(gsea_df = x, geneset_colnames = "genes - hgnc_symbol", term_colnames = "GO term name", convert = "toMouse", delimiter = ";"))
+```
+
+Some homologous genes might have passed through as we convert mouse to human symbols, and thus are there in the curated synGO list, but not signif. Remove these. 
+
+```{r}
+baseline <- read.table("../outs/tables/DEG_MSN_rw_un.txt", header = TRUE, stringsAsFactors = FALSE)
+baseline1 <- baseline[(baseline$D1_log2FC < -0.25 & baseline$D1_padj < 1e-3), ]
+baseline2 <- baseline[(baseline$D2_log2FC < -0.25 & baseline$D2_padj < 1e-3), ]
+baseline <- intersect(baseline1$Gene, baseline2$Gene)
+
+restore_deg <- readRDS("../outs/RDS/MAST_R62MSN_restore.RDS")
+restore <- lapply(restore_deg, function(x) row.names(x$MAST)[x$MAST$avg_log2FC > 0.25 & x$MAST$p_val_adj < 1e-3])
+restore <- Reduce(intersect, restore)
+```
+
+```{r}
+synGO_pway[[1]] <- synGO_pway[[1]][synGO_pway[[1]]$Gene %in% baseline,]
+synGO_pway[[2]] <- synGO_pway[[2]][synGO_pway[[2]]$Gene %in% restore,]
+```
+
+Prune synGO_pway[[baseline]] to remove genes that were downregulated in R62 and baseline, and did not restore 
+
+```{r}
+synGO_pway[["BaselinexRestore"]] = synGO_pway[["Baseline"]][synGO_pway[["Baseline"]]$Gene %in% restore, ]
+```
+
+```{r}
+# The higher level terms 
+highLevel <- lapply(synGO_list, function(x) x[, c("user interface reference code", "GO term name")])
+highLevel <- lapply(highLevel, function(x) {x$bigTerm <- substring(x$`user interface reference code`, 1,1); return(x)})
+```
+
+```{r}
+highLevel$Baseline
+```
+
+```{r}
+highLevel$Restore
+```
+
+
+
+```{r}
+# save(highLevel, synGO_pway, file = "outs/RDS/MSN_restoreSynGO_diffRes.RData")
+```
+
+#### The picked TF networks 
+
+goi is the nodes where genes are restored with the tfs
+
+```{r}
+goi <- c(lapply(synGO_pway[c("Restore", "BaselinexRestore")], function(x) x$Gene) %>% unlist(), pickedTF) %>% unique()
+```
+
+```{r}
+regs_pickedTF <- lapply(regs[pickedTF], function(x) x[x%in%goi])
+regs_pickedTF.df <- data.frame(Gene = character(), Term = character())
+for (i in names(regs_pickedTF)) {
+  tmp <- data.frame(Gene = regs_pickedTF[[i]], 
+                    Term = rep(i, length(regs_pickedTF[[i]])))
+  regs_pickedTF.df <- rbind(regs_pickedTF.df, tmp)
+}
+```
+
+```{r}
+highLevel.df <- purrr::reduce(highLevel, rbind)
+highLevel.df <- highLevel.df[!duplicated(highLevel.df),]
+highLevel.df
+```
+
+```{r}
+# Read in restore and baseline deg 
+restore_deg <- readRDS("../outs/RDS/MAST_R62MSN_restore.RDS")
+restore_mast <- lapply(restore_deg, function(x) x$MAST)
+restore_up <- lapply(restore_mast, function(x) row.names(x)[x$p_val_adj < 1e-3 & x$avg_log2FC > 0.25]) %>% unlist %>% unique() # > 0.25 for up # 7,187 genes
+
+baseline_deg <- readRDS("../outs/RDS/MAST_MSN_pairwise.RDS")[["rw_un"]]
+baseline_mast <- lapply(baseline_deg, function(x) x$MAST)
+baseline_down <- lapply(baseline_mast, function(x) row.names(x)[x$avg_log2FC < 0]) %>% unlist() %>% unique() # > 0.25 for up # 3,402 genes 
+
+# SynGO in restore that are differentially expressed 
+syngo_restore <- synGO_pway$Restore
+# Prune for TF targets that are SIGNIFICANTLY up in restore and TRENDING down in baseline
+syngo_restore_filt <- syngo_restore[syngo_restore$Gene %in% restore_up[restore_up %in% baseline_down],]
+regs_pickedTF.df <- data.frame(Gene = character(), Term = character())
+for (i in pickedTF) {
+  targets_of_TF_filt <- regs[[i]][regs[[i]] %in% syngo_restore_filt$Gene]
+  tmp <- data.frame(Gene = targets_of_TF_filt, 
+                    Term = rep(i, length(targets_of_TF_filt)))
+  regs_pickedTF.df <- rbind(regs_pickedTF.df, tmp)
+}
+lapply(regs[pickedTF], function(x) length(x[x %in% syngo_restore_filt$Gene]))
+dim(regs_pickedTF.df) # SHould sum up to all the lengths above # 56
+```
+
+#### EDGE 
+
+```{r}
+# Map smaller terms to bigger terms 
+synGO_pway2 <- syngo_restore_filt
+synGO_pway2$Term <- plyr::mapvalues(synGO_pway2$Term, highLevel.df$`GO term name`, highLevel.df$bigTerm, warn_missing = FALSE)
+# Remove genes that are not targets of the picked TFs
+synGO_pway2 <- synGO_pway2[which(synGO_pway2$Gene %in% unique(regs_pickedTF.df$Gene)),]
+synGO_pway2 <- synGO_pway2[!duplicated(synGO_pway2),]
+# Stitch the to TF
+synGO_pway2 <- rbind(synGO_pway2, regs_pickedTF.df)
+row.names(synGO_pway2) <- NULL
+# Add in type
+edge.df <- synGO_pway2
+edge.df$type <- ifelse(nchar(edge.df$Term) == 1, "GO", "TF")
+
+```
+
+#### NODE
+
+```{r}
+node1 <- data.frame(Node = unique(c(edge.df$Gene, pickedTF)))
+for (msn in c("D1", "D2")) {
+  x_restore <- restore_mast[[msn]][, c("avg_log2FC", "p_val_adj")] %>% tibble::rownames_to_column(var = "Gene")
+  colnames(x_restore) <- c("Gene", paste0(msn, "_log2FC_restore"), paste0(msn, "_padj_restore"))
+  node1 <- merge(node1, x_restore, by.x = "Node", by.y = "Gene")
+  
+  x_baseline <- baseline_mast[[paste0(msn, "_MSN")]][, c("avg_log2FC", "p_val_adj")] %>% tibble::rownames_to_column(var = "Gene")
+  colnames(x_baseline) <- c("Gene", paste0(msn, "_log2FC_baseline"), paste0(msn, "_padj_baseline"))
+  node1 <- merge(node1, x_baseline, by.x = "Node", by.y = "Gene")
+}
+# Type of node
+node1$Type <- ifelse(node1$Node %in% pickedTF, "TF", "Gene")
+# Add in Term and TF info 
+node2 <- data.frame(Node = unique(edge.df$Term))
+node2 <- node2[!node2$Node %in% pickedTF,, drop = FALSE]
+node2$Type <- "Term"
+node.df <- dplyr::bind_rows(node1, node2)
+```
+
+#### NETWORK
+
+```{r}
+edge <- edge.df
+node <- node.df
+
+v <- edge[,1:2]
+g <- graph_from_data_frame(v,directed = F)
+
+node_type_order <- plyr::mapvalues(vertex_attr(g)$name, node$Node, node$Type)
+node_shape <- plyr::mapvalues(node_type_order, c("Gene", "TF", "Term"), c("circle", "sphere", "square"))
+node_size <- plyr::mapvalues(node_type_order, c("Gene", "TF", "Term"), c(15, 20, 20)) %>% as.numeric()
+vertex_attr(g)$name[which(nchar(vertex_attr(g)$name) == 1)]
+which(nchar(vertex_attr(g)$name) == 1)
+node_color <- plyr::mapvalues(node_type_order, c("Gene", "TF", "Term"), c("grey", "red", "blue"))
+node_color[which(nchar(vertex_attr(g)$name) == 1)] <- c("blue", "greenyellow", "limegreen", "darkorchid")
+
+edge_color <- plyr::mapvalues(edge$Term, c("Cux1", "Esrrg", "Ppargc1a", "F", "G", "H", "I"), c("grey", "grey", "grey", "blue", "greenyellow", "limegreen", "darkorchid"))
+```
+
+High levels:
+H: synaptic signaling; 
+I: synapse organization, 
+G: process in the postsynapse
+F: synaptic vesicle exocytosis
+
+```{r fig.width=8.5*2, fig.height=5*2}
+
+a <- 1.9
+# pdf("PDF/igraph.pdf", width = 5*a, height = 5*a)
+plot(g, vertex.shape = node_shape, vertex.size = node_size, vertex.color = node_color, vertex.frame.color = "white", vertex.label.color = "black", vertex.label.size = 10, edge.color = edge_color, edge.width = 2, vertex.label.family = "Helvetica")
+# dev.off(); graphics.off()
+
+```
+
+
+### END
+
+### Softwares
+
+```{r}
+sessionInfo()
+```
+
+

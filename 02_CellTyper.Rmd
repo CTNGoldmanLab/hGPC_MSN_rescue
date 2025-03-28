@@ -1,0 +1,122 @@
+---
+title: 'Annotation of Cell Types in the Integrated Object'
+author: "Nguyen Huynh"
+date: "`r Sys.Date()`"
+output: html_document
+abstract: "Investigate the expression patterns of canonical markers to identify cell types in our integrated object" 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.path = paste0("./Integrate_Plots/"), fig.width = 8, message=FALSE, warning = FALSE, eval = TRUE)
+```
+
+### PART 1: Read in data 
+
+```{r}
+.libPaths("/gpfs/fs1/sfw2/r/4.1.1/b1/lib64/R/library")
+library(Seurat)
+library(ggthemes)
+library(ggplot2)
+library(viridis)
+library(SeuratDisk)
+library(cowplot)
+
+my_pal <- c("snow3", viridis::viridis_pal(option = "B")(300))
+date <- format(Sys.Date(), format="%y%m%d")
+if(!exists("Integrate_Plots")) {dir.create("Integrate_Plots")}
+if(!exists("Integrate_Markers")) {dir.create("Integrate_Markers")}
+if(!exists("Exported_Matrices")) {dir.create("Exported_Matrices")}
+```
+
+### PART 2: Cell Type Annotation
+
+```{r}
+cellType_colors <- c("#FFFF00", "#FF00FF", economist_pal()(3), "#F15A60", "saddlebrown", "#FAA75B", "#9E67AB", "springgreen3", "blue", "grey80")
+
+```
+
+```{r warning = FALSE, message = FALSE, eval = FALSE, include = TRUE}
+# Convert h5ad into h5seurat, then read into R as a Seurat object
+Convert("outs/h5ad/raw.h5ad", "h5seurat", assay="RNA")
+integrated_object <- LoadH5Seurat("outs/h5ad/raw.h5seurat", assays = "RNA")
+```
+
+```{r warning = FALSE, message = FALSE, eval = FALSE, include = TRUE}
+DefaultAssay(integrated_object) <- "RNA"
+integrated_object <- NormalizeData(integrated_object, verbose = FALSE)
+integrated_object <- ScaleData(integrated_object, verbose = FALSE)
+```
+
+```{r, include=FALSE}
+integrated_object <- readRDS("outs/RDS/mash.RDS")
+```
+
+Marker expression for leiden clusters
+
+```{r}
+FeaturePlot(integrated_object, c("Sst", "Lhx6", "Gfap"))
+markers <- list(msn = c("Ppp1r1b", "Drd1", "Drd2"), 
+                interneuron = c("Gad1", "Gad2", "Adarb2", "Lhx6", "Ache", "Pvalb"),
+                gpc = c("Olig1", "Olig2", "Pdgfra", "Gpr17"), 
+                ol  = c("Plp1", "Mbp"), 
+                astrocyte = c("Aqp4", "Sox9"), 
+                microglia = c("Cx3cr1", "P2ry12"), 
+                pericyte = c("Pdgfrb", "Itga1"),
+                corticalneuron = c("Slc17a7", "Tle4"))
+got_genes <- unlist(markers)
+names(got_genes) <- NULL
+DotPlot(integrated_object, assay = "RNA", features = got_genes, scale = FALSE, dot.min = 0.25, scale.by = 2, group.by = "leiden") + scale_color_viridis(option = "B") + theme_bw() + labs(x="", y = "") + theme(axis.text.y = element_text(color = "black"), axis.text.x = element_text(color = "black", angle = 45, hjust = 1), legend.title = element_text(size = 8)) 
+```
+
+Clean up integrated_object@meta.data
+
+```{r, include = FALSE}
+M <- integrated_object@meta.data
+colnames(M)
+M <- M[,1:13]
+integrated_object@meta.data <- M
+```
+
+Manually have a celLType.txt where we annotate the cells
+
+```{r}
+cellTyper <- read.table("outs/tables/cellTyper.txt", header = TRUE, stringsAsFactors = FALSE)
+cellTyper
+```
+
+```{r}
+integrated_object$leiden <- as.character(integrated_object$leiden)
+integrated_object$cellTypeInt <- plyr::mapvalues(integrated_object$leiden, from = cellTyper$leiden, to = cellTyper$cellType, warn_missing = FALSE)
+integrated_object$cellTypeInt <- factor(integrated_object$cellTypeInt, levels = c("D1_MSN", "D2_MSN", "INTERNEURON_Adarb2", "INTERNEURON_Lhx6", "INTERNEURON_Ache", "GPC", "immatureOL", "OL", "ASTROCYTE", "MICROGLIA", "PERICYTE","ctxEXCITATORY"))
+```
+
+Final cell type annotation
+
+```{r}
+DimPlot(integrated_object, group.by = "cellTypeInt", cols = cellType_colors, label = TRUE)
+```
+
+
+```{r}
+DotPlot(integrated_object, assay = "RNA", features = got_genes, scale = FALSE, dot.min = 0.25, scale.by = 2, group.by = "cellTypeInt") + scale_color_viridis(option = "B") + theme_bw() + labs(x="", y = "") + theme(axis.text.y = element_text(color = "black"), axis.text.x = element_text(color = "black", angle = 45, hjust = 1), legend.title = element_text(size = 8)) 
+```
+
+### PART 3: Save your work
+
+```{r}
+integrated_object <- SetIdent(integrated_object, value = "cellTypeInt")
+integrated_object$mouse_engraft <- paste(integrated_object$mouse, integrated_object$engraft, sep = "_")
+```
+
+```{r, eval = FALSE, include = TRUE}
+saveRDS(integrated_object, "outs/RDS/integrated_object.RDS")
+```
+
+
+### Software
+
+```{r}
+sessionInfo()
+```
+
+
