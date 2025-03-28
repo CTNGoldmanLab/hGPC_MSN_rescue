@@ -21,7 +21,7 @@ Follow the scripts below in order to generate results of this manuscript.
 
 6. After a new integrated object on MSNs has been produced, we can add the metadata regarding groups of MSNs behavior in wild type and upon transplantation with script `04_b_MSN_metadata.R`
    
-7. [Find differential expression and transcription factors of interest]( https://rawcdn.githack.com/HuynhNPT/hGPC_MSN_rescue/3612e6cb1ee4ef92c0921dfb40b6daae0c7256f7/05_Differential_Expression_Analysis.Rmd) </br>
+7. [Find differential expression and transcription factors of interest]( https://rawcdn.githack.com/HuynhNPT/hGPC_MSN_rescue/25d24666cba70a74c447e4f1927041cd84dff48f/05_Differential_Expression_Analysis.html) </br>
 Accompanying scripts: <br>
 ```
 helper_data_wrangling_functions.R
